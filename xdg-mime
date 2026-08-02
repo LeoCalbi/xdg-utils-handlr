@@ -1,0 +1,132 @@
+#!/bin/sh
+# xdg-mime shim that redirects the query/set-default subcommands to
+# handlr-regex, and falls back to the vendored real xdg-mime for the
+# subcommands handlr has no concept of (install/uninstall of new
+# mimetype definitions).
+#
+# Documented xdg-mime contract (xdg-mime(1), xdg-utils):
+#   xdg-mime query {filetype|default} ...
+#   xdg-mime default application mimetype(s)...
+#   xdg-mime install [--mode mode] [--novendor] mimetypes-file
+#   xdg-mime uninstall [--mode mode] mimetypes-file
+#   xdg-mime {--help|--manual|--version}
+# Exit codes: 0 success, 1 syntax error, 2 file not found,
+#             3 required tool not found, 4 action failed,
+#             5 permission denied reading a file.
+#
+# Ships as part of xdg-utils-handlr, a drop-in replacement package for
+# xdg-utils (provides/conflicts xdg-utils).
+
+set -eu
+
+PROG="xdg-mime"
+UPSTREAM="/usr/lib/xdg-utils-handlr/xdg-mime.upstream"
+
+usage() {
+    cat <<EOF
+Usage: $PROG query {filetype|default} ...
+       $PROG default application mimetype(s)...
+       $PROG install [--mode mode] [--novendor] mimetypes-file
+       $PROG uninstall [--mode mode] mimetypes-file
+       $PROG {--help|--manual|--version}
+EOF
+}
+
+fallback_to_upstream() {
+    # install/uninstall (and anything unrecognized) have no handlr
+    # equivalent: hand off to the genuine upstream xdg-mime script so
+    # this behaves identically to real xdg-utils, rather than failing.
+    if [ -x "$UPSTREAM" ]; then
+        exec "$UPSTREAM" "$@"
+    else
+        echo "$PROG: upstream xdg-mime fallback not found (broken install)" >&2
+        exit 3
+    fi
+}
+
+case "${1:-}" in
+    --help)
+        usage
+        exit 0
+        ;;
+    --manual)
+        usage
+        echo
+        echo "This is a handlr-regex shim for xdg-mime (xdg-utils-handlr package)."
+        echo "'query' and 'default' are served by handlr; 'install'/'uninstall'"
+        echo "fall back to the real upstream xdg-mime script."
+        exit 0
+        ;;
+    --version)
+        if command -v handlr >/dev/null 2>&1; then
+            printf 'xdg-mime shim (handlr-regex backend, xdg-utils-handlr package)\n'
+            handlr --version
+        else
+            echo "handlr: command not found" >&2
+            exit 3
+        fi
+        exit 0
+        ;;
+    "")
+        usage >&2
+        exit 1
+        ;;
+esac
+
+if ! command -v handlr >/dev/null 2>&1; then
+    echo "$PROG: handlr: required tool not found" >&2
+    exit 3
+fi
+
+case "$1" in
+    query)
+        shift
+        case "${1:-}" in
+            filetype)
+                shift
+                if [ "$#" -lt 1 ]; then
+                    usage >&2
+                    exit 1
+                fi
+                # handlr mime accepts one or more paths/URLs
+                handlr mime "$@"
+                ;;
+            default)
+                shift
+                if [ "$#" -ne 1 ]; then
+                    usage >&2
+                    exit 1
+                fi
+                handlr get "$1"
+                ;;
+            *)
+                usage >&2
+                exit 1
+                ;;
+        esac
+        ;;
+    default)
+        shift
+        if [ "$#" -lt 2 ]; then
+            usage >&2
+            exit 1
+        fi
+        app="$1"
+        shift
+        for mimetype in "$@"; do
+            handlr set "$mimetype" "$app"
+        done
+        ;;
+    install|uninstall)
+        fallback_to_upstream "$@"
+        ;;
+    -*)
+        echo "$PROG: unrecognized option '$1'" >&2
+        usage >&2
+        exit 1
+        ;;
+    *)
+        usage >&2
+        exit 1
+        ;;
+esac

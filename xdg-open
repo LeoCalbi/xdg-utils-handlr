@@ -1,0 +1,97 @@
+#!/bin/sh
+# xdg-open shim that redirects to handlr-regex (https://github.com/Anomalocaridid/handlr-regex)
+#
+# Ships as part of xdg-utils-handlr, a drop-in replacement package for
+# xdg-utils (provides/conflicts xdg-utils) so dependents keep resolving.
+#
+# Documented xdg-open contract (xdg-open(1), xdg-utils):
+#   xdg-open { file | URL }
+#   xdg-open { --help | --manual | --version }
+# Exit codes: 0 success, 1 syntax error, 2 file not found,
+#             3 required tool not found, 4 action failed.
+
+set -eu
+
+PROG="xdg-open"
+
+usage() {
+    cat <<EOF
+Usage: $PROG { file | URL }
+       $PROG { --help | --manual | --version }
+EOF
+}
+
+case "${1:-}" in
+    --help)
+        usage
+        exit 0
+        ;;
+    --manual)
+        usage
+        echo
+        echo "This is a handlr-regex shim for xdg-open (xdg-utils-handlr package)."
+        echo "See: https://github.com/Anomalocaridid/handlr-regex"
+        exit 0
+        ;;
+    --version)
+        if command -v handlr >/dev/null 2>&1; then
+            printf 'xdg-open shim (handlr-regex backend, xdg-utils-handlr package)\n'
+            handlr --version
+        else
+            echo "handlr: command not found" >&2
+            exit 3
+        fi
+        exit 0
+        ;;
+    "")
+        usage >&2
+        exit 1
+        ;;
+esac
+
+case "$1" in
+    -*)
+        echo "$PROG: unrecognized option '$1'" >&2
+        usage >&2
+        exit 1
+        ;;
+esac
+
+if [ "$#" -gt 1 ]; then
+    echo "$PROG: too many arguments" >&2
+    usage >&2
+    exit 1
+fi
+
+TARGET="$1"
+
+if ! command -v handlr >/dev/null 2>&1; then
+    echo "$PROG: handlr: required tool not found" >&2
+    exit 3
+fi
+
+# Treat anything that starts with a well-formed URI scheme (RFC 3986:
+# ALPHA *( ALPHA / DIGIT / "+" / "-" / "." ) ":") as a URI and let
+# handlr resolve it; otherwise require the path to exist locally.
+is_uri=0
+case "$TARGET" in
+    [a-zA-Z]*:*)
+        scheme="${TARGET%%:*}"
+        rest="${scheme#?}"
+        case "$rest" in
+            *[!a-zA-Z0-9+.-]*) ;;
+            *) is_uri=1 ;;
+        esac
+        ;;
+esac
+
+if [ "$is_uri" -eq 0 ] && [ ! -e "$TARGET" ]; then
+    echo "$PROG: file '$TARGET' does not exist" >&2
+    exit 2
+fi
+
+if handlr open "$TARGET"; then
+    exit 0
+else
+    exit 4
+fi
