@@ -1,0 +1,26 @@
+pkgbase = xdg-utils-handlr
+	pkgdesc = xdg-utils replacement: xdg-open/xdg-mime redirected to handlr-regex, other tools vendored from upstream xdg-utils
+	pkgver = 1.2.1
+	pkgrel = 1
+	url = https://github.com/Anomalocaridid/handlr-regex
+	arch = any
+	license = MIT
+	depends = handlr-regex
+	depends = file
+	depends = bash
+	optdepends = exo: for Xfce support in vendored xdg-screensaver/xdg-email fallbacks
+	optdepends = kde-cli-tools: for KDE Plasma support in vendored fallbacks
+	optdepends = perl-file-mimeinfo: for generic mimetype support in vendored xdg-mime fallback path
+	optdepends = xorg-xprop: for X11 support in xdg-screensaver
+	optdepends = xorg-xset: for X11 support in xdg-screensaver
+	provides = xdg-utils
+	conflicts = xdg-utils
+	options = !strip
+	source = xdg-utils-1.2.1.tar.gz::https://gitlab.freedesktop.org/xdg/xdg-utils/-/archive/v1.2.1/xdg-utils-v1.2.1.tar.gz
+	source = xdg-open
+	source = xdg-mime
+	sha256sums = f6b648c064464c2636884c05746e80428110a576f8daacf46ef2e554dcfdae75
+	sha256sums = a4e4ad66921b146d1cee9c5be0f7449ebf4203bdb6ae808e16bdb7fb535b900d
+	sha256sums = 8f0b0335863e57fbe0b40fc1a4db7c64276c4d18ae1ede064066057f72ae372f
+
+pkgname = xdg-utils-handlr
