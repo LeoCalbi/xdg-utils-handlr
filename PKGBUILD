@@ -36,7 +36,8 @@ pkgdesc="xdg-utils replacement: xdg-open/xdg-mime redirected to handlr-regex, ot
 arch=('any')
 url="https://github.com/Anomalocaridid/handlr-regex"
 license=('MIT')
-depends=('handlr-regex' 'file' 'bash')
+depends=('handlr-regex')
+makedepends=('xmlto' 'docbook-xsl' 'w3m')
 optdepends=(
     'exo: for Xfce support in vendored xdg-screensaver/xdg-email fallbacks'
     'kde-cli-tools: for KDE Plasma support in vendored fallbacks'
@@ -44,17 +45,25 @@ optdepends=(
     'xorg-xprop: for X11 support in xdg-screensaver'
     'xorg-xset: for X11 support in xdg-screensaver'
 )
-provides=('xdg-utils')
+provides=("xdg-utils=${pkgver}")
 conflicts=('xdg-utils')
-options=('!strip')
+install="${pkgname}.install"
 source=(
     "xdg-utils-${pkgver}.tar.gz::https://gitlab.freedesktop.org/xdg/xdg-utils/-/archive/v${pkgver}/xdg-utils-v${pkgver}.tar.gz"
     "xdg-open"
     "xdg-mime"
+    "xdg-utils-handlr.install"
 )
 sha256sums=('f6b648c064464c2636884c05746e80428110a576f8daacf46ef2e554dcfdae75'
             'a4e4ad66921b146d1cee9c5be0f7449ebf4203bdb6ae808e16bdb7fb535b900d'
-            '8f0b0335863e57fbe0b40fc1a4db7c64276c4d18ae1ede064066057f72ae372f')
+            '8f0b0335863e57fbe0b40fc1a4db7c64276c4d18ae1ede064066057f72ae372f'
+            '438ede5b1492cddc520c03104b271f06d178601da855e0b9460a1d0525350699')
+
+build() {
+    cd "${srcdir}/xdg-utils-v${pkgver}"
+    ./configure --prefix=/usr --mandir=/usr/share/man
+    make -C scripts scripts man
+}
 
 package() {
     local upstream="${srcdir}/xdg-utils-v${pkgver}"
@@ -81,10 +90,8 @@ package() {
     for tool in xdg-desktop-icon xdg-desktop-menu xdg-email \
                 xdg-icon-resource xdg-mime xdg-open xdg-screensaver \
                 xdg-settings; do
-        if [ -f "${upstream}/scripts/${tool}.1" ]; then
-            install -Dm644 "${upstream}/scripts/${tool}.1" \
-                "${pkgdir}/usr/share/man/man1/${tool}.1"
-        fi
+        install -Dm644 "${upstream}/scripts/man/${tool}.1" \
+            "${pkgdir}/usr/share/man/man1/${tool}.1"
     done
 
     install -Dm644 "${upstream}/LICENSE" \
