@@ -1,0 +1,144 @@
+name: check-upstream-version
+
+# Watches the upstream freedesktop.org xdg-utils project for new tags and,
+# when one is found that we haven't packaged yet, opens a pull request that
+# bumps pkgver/pkgrel, recomputes sha256sums, and regenerates .SRCINFO.
+#
+# If the PR can't be created/updated automatically for any reason, it falls
+# back to opening (or updating) a tracking issue instead, so a new upstream
+# release is never silently missed.
+
+on:
+  schedule:
+    # Every Monday at 06:00 UTC.
+    - cron: "0 6 * * 1"
+  workflow_dispatch: {}
+
+permissions:
+  contents: write
+  pull-requests: write
+  issues: write
+
+jobs:
+  check-version:
+    runs-on: ubuntu-latest
+    container:
+      image: archlinux:base-devel
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Install tooling
+        run: |
+          pacman -Syu --noconfirm
+          pacman -S --needed --noconfirm git jq curl sudo base-devel
+
+      - name: Determine current and latest upstream version
+        id: versions
+        run: |
+          set -e
+          current="$(grep -m1 '^pkgver=' PKGBUILD | cut -d= -f2)"
+          echo "current=${current}" >> "$GITHUB_OUTPUT"
+
+          # xdg-utils lives on gitlab.freedesktop.org, project path xdg/xdg-utils.
+          # Tags are named like "v1.2.1"; pick the highest by version sort.
+          latest_tag="$(curl -sf \
+            'https://gitlab.freedesktop.org/api/v4/projects/xdg%2Fxdg-utils/repository/tags?order_by=name&sort=desc' \
+            | jq -r '[.[].name | select(test("^v[0-9]+(\\.[0-9]+)*$"))] | sort_by(. | ltrimstr("v") | split(".") | map(tonumber)) | last')"
+
+          if [ -z "$latest_tag" ] || [ "$latest_tag" = "null" ]; then
+            echo "::error::Could not determine latest upstream tag from GitLab API"
+            exit 1
+          fi
+
+          latest="${latest_tag#v}"
+          echo "latest=${latest}" >> "$GITHUB_OUTPUT"
+          echo "latest_tag=${latest_tag}" >> "$GITHUB_OUTPUT"
+
+          if [ "$current" = "$latest" ]; then
+            echo "up_to_date=true" >> "$GITHUB_OUTPUT"
+          else
+            echo "up_to_date=false" >> "$GITHUB_OUTPUT"
+          fi
+
+      - name: Bump pkgver / reset pkgrel
+        if: steps.versions.outputs.up_to_date == 'false'
+        run: |
+          set -e
+          sed -i "s/^pkgver=.*/pkgver=${{ steps.versions.outputs.latest }}/" PKGBUILD
+          sed -i "s/^pkgrel=.*/pkgrel=1/" PKGBUILD
+
+      - name: Recompute sha256sums against the new tarball + local shims
+        if: steps.versions.outputs.up_to_date == 'false'
+        run: |
+          set -e
+          useradd -m builder
+          echo 'builder ALL=(ALL) NOPASSWD: ALL' >> /etc/sudoers
+          chown -R builder:builder "$GITHUB_WORKSPACE"
+          su builder -c 'cd "$PWD" && updpkgsums'
+
+      - name: Regenerate .SRCINFO
+        if: steps.versions.outputs.up_to_date == 'false'
+        run: |
+          set -e
+          chown -R builder:builder "$GITHUB_WORKSPACE"
+          su builder -c 'cd "$PWD" && makepkg --printsrcinfo > .SRCINFO'
+
+      - name: Open pull request with the version bump
+        if: steps.versions.outputs.up_to_date == 'false'
+        id: pr
+        uses: peter-evans/create-pull-request@v6
+        with:
+          token: ${{ secrets.GITHUB_TOKEN }}
+          branch: "upstream-bump/xdg-utils-${{ steps.versions.outputs.latest }}"
+          commit-message: "PKGBUILD: bump xdg-utils to ${{ steps.versions.outputs.latest }}"
+          title: "Bump vendored xdg-utils to ${{ steps.versions.outputs.latest }}"
+          body: |
+            Upstream `xdg-utils` released **${{ steps.versions.outputs.latest_tag }}**
+            (was `${{ steps.versions.outputs.current }}`):
+            https://gitlab.freedesktop.org/xdg/xdg-utils/-/tags/${{ steps.versions.outputs.latest_tag }}
+
+            This PR was opened automatically by the `check-upstream-version`
+            workflow. It updates:
+            - `pkgver` (and resets `pkgrel` to `1`)
+            - `sha256sums` (recomputed with `updpkgsums`)
+            - `.SRCINFO` (regenerated with `makepkg --printsrcinfo`)
+
+            Please review the upstream changelog/diff before merging — in
+            particular check whether any of the vendored scripts
+            (`xdg-settings`, `xdg-desktop-menu`, `xdg-desktop-icon`,
+            `xdg-icon-resource`, `xdg-email`, `xdg-screensaver`, or the
+            fallback `xdg-mime.upstream`) changed their CLI surface in a way
+            that would affect the `xdg-open`/`xdg-mime` shims.
+          labels: |
+            upstream-update
+            automated-pr
+          delete-branch: true
+
+      - name: Fall back to an issue if the PR step failed
+        if: failure() && steps.versions.outputs.up_to_date == 'false'
+        uses: actions/github-script@v7
+        with:
+          script: |
+            const latest = "${{ steps.versions.outputs.latest_tag }}";
+            const current = "${{ steps.versions.outputs.current }}";
+            const title = `Upstream xdg-utils ${latest} available (packaged: ${current})`;
+            const { data: existing } = await github.rest.issues.listForRepo({
+              owner: context.repo.owner,
+              repo: context.repo.repo,
+              state: "open",
+              labels: "upstream-update",
+            });
+            if (existing.some(i => i.title === title)) return;
+            await github.rest.issues.create({
+              owner: context.repo.owner,
+              repo: context.repo.repo,
+              title,
+              labels: ["upstream-update"],
+              body:
+                `The automated version-bump PR could not be created/updated.\n\n` +
+                `Upstream released **${latest}** (currently packaged: **${current}**):\n` +
+                `https://gitlab.freedesktop.org/xdg/xdg-utils/-/tags/${latest}\n\n` +
+                `Please bump \`pkgver\` manually, run \`updpkgsums\`, regenerate ` +
+                `\`.SRCINFO\`, and open a PR.`,
+            });

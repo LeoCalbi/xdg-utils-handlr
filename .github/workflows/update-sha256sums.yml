@@ -1,0 +1,58 @@
+name: update-sha256sums
+
+# Keeps sha256sums in PKGBUILD (and .SRCINFO) correct whenever PKGBUILD or
+# the local shim scripts (xdg-open / xdg-mime) change on a pull request —
+# so contributors never have to run `updpkgsums` by hand. If the recomputed
+# checksums differ from what's committed, the bot pushes a fixup commit
+# straight onto the PR branch.
+
+on:
+  pull_request:
+    paths:
+      - "PKGBUILD"
+      - "xdg-open"
+      - "xdg-mime"
+  workflow_dispatch: {}
+
+permissions:
+  contents: write
+
+jobs:
+  refresh-checksums:
+    # Skip on forked PRs: GITHUB_TOKEN can't push to a fork's branch.
+    if: github.event.pull_request.head.repo.full_name == github.repository || github.event_name == 'workflow_dispatch'
+    runs-on: ubuntu-latest
+    container:
+      image: archlinux:base-devel
+    steps:
+      - name: Checkout PR branch
+        uses: actions/checkout@v4
+        with:
+          ref: ${{ github.event.pull_request.head.ref || github.ref }}
+
+      - name: Install tooling
+        run: |
+          pacman -Syu --noconfirm
+          pacman -S --needed --noconfirm git base-devel sudo
+
+      - name: Create unprivileged build user
+        run: |
+          useradd -m builder
+          echo 'builder ALL=(ALL) NOPASSWD: ALL' >> /etc/sudoers
+          chown -R builder:builder "$GITHUB_WORKSPACE"
+
+      - name: Recompute sha256sums
+        run: su builder -c 'cd "$PWD" && updpkgsums'
+
+      - name: Regenerate .SRCINFO
+        run: |
+          chown -R builder:builder "$GITHUB_WORKSPACE"
+          su builder -c 'cd "$PWD" && makepkg --printsrcinfo > .SRCINFO'
+
+      - name: Commit fixups if anything changed
+        uses: stefanzweifel/git-auto-commit-action@v5
+        with:
+          commit_message: "PKGBUILD: refresh sha256sums / .SRCINFO"
+          file_pattern: "PKGBUILD .SRCINFO"
+          commit_user_name: "github-actions[bot]"
+          commit_user_email: "github-actions[bot]@users.noreply.github.com"
