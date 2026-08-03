@@ -12,6 +12,7 @@ on:
       - "PKGBUILD"
       - "xdg-open"
       - "xdg-mime"
+      - "xdg-utils-handlr.install"
   workflow_dispatch: {}
 
 permissions:

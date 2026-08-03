@@ -132,6 +132,14 @@ risk from vendoring).
 - [x] `PACKAGER` is set in `~/.config/pacman/makepkg.conf` so built
       packages carry a real maintainer string instead of
       `Unknown Packager` in `pacman -Qi`.
+- [ ] (Optional) Provide a fine-grained PAT as `secrets.CI_PAT` (or
+      similar) and swap it into
+      [`check-upstream-version.yml`](.github/workflows/check-upstream-version.yml)
+      in place of `secrets.GITHUB_TOKEN`. GitHub intentionally does not
+      re-trigger `pull_request` workflows on PRs opened by the default
+      `GITHUB_TOKEN`, so the weekly auto-bump PR currently lands without
+      `build-and-test` running against it. A PAT with `contents:write` +
+      `pull-requests:write` scopes on this repo restores CI on those PRs.
 - [ ] Manual testing on a real Arch install (not just the CI container):
       - [ ] Confirm `xdg-open` correctly opens files/URLs via handlr on a
             real desktop session (GNOME/KDE/Sway/etc.)
