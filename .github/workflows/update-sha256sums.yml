@@ -51,19 +51,28 @@ jobs:
           chown -R builder:builder "$GITHUB_WORKSPACE"
           su builder -c 'cd "$PWD" && makepkg --printsrcinfo > .SRCINFO'
 
-      - name: Restore workspace ownership for git-auto-commit-action
+      - name: Restore workspace ownership for git
         run: |
           chown -R root:root "$GITHUB_WORKSPACE"
           git config --global --add safe.directory "$GITHUB_WORKSPACE"
 
-      - name: Commit fixups if anything changed
+      - name: Commit and push fixups if anything changed
         id: autocommit
-        uses: stefanzweifel/git-auto-commit-action@v5
-        with:
-          commit_message: "PKGBUILD: refresh sha256sums / .SRCINFO"
-          file_pattern: "PKGBUILD .SRCINFO"
-          commit_user_name: "github-actions[bot]"
-          commit_user_email: "github-actions[bot]@users.noreply.github.com"
+        env:
+          BRANCH: ${{ github.event.pull_request.head.ref || github.ref_name }}
+        run: |
+          set -e
+          cd "$GITHUB_WORKSPACE"
+          if git diff --quiet -- PKGBUILD .SRCINFO; then
+              echo "changes_detected=false" >> "$GITHUB_OUTPUT"
+              exit 0
+          fi
+          git config user.name  "github-actions[bot]"
+          git config user.email "github-actions[bot]@users.noreply.github.com"
+          git add PKGBUILD .SRCINFO
+          git commit -m "PKGBUILD: refresh sha256sums / .SRCINFO"
+          git push origin "HEAD:${BRANCH}"
+          echo "changes_detected=true" >> "$GITHUB_OUTPUT"
 
       - name: Report outcome
         run: |
