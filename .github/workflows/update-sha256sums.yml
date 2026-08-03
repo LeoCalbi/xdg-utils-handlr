@@ -34,7 +34,8 @@ jobs:
       - name: Install tooling
         run: |
           pacman -Syu --noconfirm
-          pacman -S --needed --noconfirm git base-devel sudo
+          # pacman-contrib provides updpkgsums; base-devel does not.
+          pacman -S --needed --noconfirm git base-devel sudo pacman-contrib
 
       - name: Create unprivileged build user
         run: |
