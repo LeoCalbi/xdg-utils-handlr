@@ -92,6 +92,12 @@ jobs:
           chown -R builder:builder "$GITHUB_WORKSPACE"
           su builder -c 'cd "$PWD" && makepkg --printsrcinfo > .SRCINFO'
 
+      - name: Restore workspace ownership for create-pull-request
+        if: steps.versions.outputs.up_to_date == 'false'
+        run: |
+          chown -R root:root "$GITHUB_WORKSPACE"
+          git config --global --add safe.directory "$GITHUB_WORKSPACE"
+
       - name: Open pull request with the version bump
         if: steps.versions.outputs.up_to_date == 'false'
         id: pr
