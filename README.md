@@ -53,7 +53,7 @@ doesn't cover.
 ## Installing (from this repo, pre-AUR)
 
 ```sh
-git clone https://github.com/<your-username>/xdg-utils-handlr.git
+git clone https://github.com/LeoCalbi/xdg-utils-handlr.git
 cd xdg-utils-handlr
 makepkg -si
 ```
@@ -126,21 +126,12 @@ risk from vendoring).
       against `bash` in `base`, and `handlr-regex` flagged as
       possibly-unused because namcap only inspects library links, not
       shell-level `command -v` / `handlr open` calls).
-- [ ] Update `url=` in `PKGBUILD` from the handlr-regex upstream to this
-      repository's own GitHub URL once it is created (currently
-      `https://github.com/Anomalocaridid/handlr-regex`; should become
-      `https://github.com/<your-username>/xdg-utils-handlr`). Also update
-      the same URL in `README.md`'s
+- [x] `url=` in `PKGBUILD` and the clone URL in
       [Installing (from this repo, pre-AUR)](#installing-from-this-repo-pre-aur)
-      section.
-- [ ] Set a real `PACKAGER` in your local makepkg config so built packages
-      show a maintainer instead of `Unknown Packager` in `pacman -Qi`:
-      ```sh
-      mkdir -p ~/.config/pacman
-      printf 'PACKAGER="Leonardo Calbi <leocalbi@gmail.com>"\n' \
-          >> ~/.config/pacman/makepkg.conf
-      ```
-      (System-wide alternative: edit `/etc/makepkg.conf`.)
+      now point at `https://github.com/LeoCalbi/xdg-utils-handlr`.
+- [x] `PACKAGER` is set in `~/.config/pacman/makepkg.conf` so built
+      packages carry a real maintainer string instead of
+      `Unknown Packager` in `pacman -Qi`.
 - [ ] Manual testing on a real Arch install (not just the CI container):
       - [ ] Confirm `xdg-open` correctly opens files/URLs via handlr on a
             real desktop session (GNOME/KDE/Sway/etc.)
