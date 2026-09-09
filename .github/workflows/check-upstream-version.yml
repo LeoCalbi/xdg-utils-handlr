@@ -180,7 +180,7 @@ jobs:
 
       - name: Fall back to an issue if the PR step failed
         if: failure() && steps.versions.outputs.up_to_date == 'false'
-        uses: actions/github-script@v7
+        uses: actions/github-script@v8
         with:
           script: |
             const latest = "${{ steps.versions.outputs.latest_tag }}";
