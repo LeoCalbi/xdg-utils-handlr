@@ -1,100 +1,108 @@
 name: build-and-test
 
+# Builds the package in an official Arch container, then runs the bats suite
+# in tests/ against the installed result.
+#
+# The behavioral assertions live in tests/, not inline here, so the same
+# checks a contributor runs locally (tests/run.sh) are the ones CI runs.
+
 on:
   push:
     branches: [main]
   pull_request:
   workflow_dispatch:
 
+permissions:
+  contents: read
+
+concurrency:
+  group: build-and-test-${{ github.ref }}
+  cancel-in-progress: true
+
 jobs:
   makepkg:
-    # Build and smoke-test the package inside an official Arch Linux
-    # container, since makepkg refuses to run as root without
-    # --asroot and Arch's own actions runners are not guaranteed.
+    # Runs inside Arch because it builds and installs a pacman package;
+    # makepkg also refuses to run as root, hence the `builder` user below.
     runs-on: ubuntu-latest
     container:
       image: archlinux:base-devel
     steps:
-      - name: Checkout
-        uses: actions/checkout@v4
-
-      - name: Update system and install build/runtime deps
+      - name: Install git before checkout
+        # archlinux:base-devel ships no git, and actions/checkout silently
+        # degrades to a REST-API tarball download (no .git directory) when
+        # git >= 2.18 is absent from PATH. Nothing here needs .git today,
+        # but the degraded mode is invisible and bites the moment a git
+        # command is added, so make the checkout a real clone.
         run: |
-          pacman -Syu --noconfirm
-          pacman -S --needed --noconfirm git base-devel sudo
+          pacman -Sy --noconfirm --needed archlinux-keyring
+          pacman -S  --noconfirm --needed git
+
+      - name: Checkout
+        uses: actions/checkout@v5
+
+      - name: Update system and install build/test deps
+        run: |
+          pacman -Su --noconfirm
+          pacman -S --needed --noconfirm base-devel sudo namcap shellcheck \
+                                         pacman-contrib bats handlr-regex
 
       - name: Create unprivileged build user
-        # makepkg refuses to run as root; create a throwaway user
-        # with passwordless sudo, matching how AUR helpers operate.
+        # makepkg refuses to run as root; create a throwaway user with
+        # passwordless sudo, matching how AUR helpers operate.
         run: |
           useradd -m builder
           echo 'builder ALL=(ALL) NOPASSWD: ALL' >> /etc/sudoers
           chown -R builder:builder "$GITHUB_WORKSPACE"
 
-      - name: Install handlr-regex (runtime dep, from the extra repo)
-        run: pacman -S --needed --noconfirm handlr-regex
+      - name: Lint shell sources
+        run: shellcheck -s sh xdg-open xdg-mime tests/run.sh
 
-      - name: Generate/verify .SRCINFO is in sync with PKGBUILD
+      - name: Lint test helpers
+        run: shellcheck -s bash tests/helpers.bash
+
+      - name: Lint PKGBUILD with namcap
         run: |
-          chown -R builder:builder .
-          su builder -c 'cd "$PWD" && makepkg --printsrcinfo > .SRCINFO.generated'
+          set -eu
+          namcap PKGBUILD | tee namcap-pkgbuild.log
+          # namcap exits 0 even when it reports problems, so gate on the
+          # error prefix explicitly. Warnings are printed for review.
+          if grep -q ' E: ' namcap-pkgbuild.log; then
+            echo "::error::namcap reported errors on PKGBUILD"
+            exit 1
+          fi
+
+      - name: Verify .SRCINFO is in sync with PKGBUILD
+        run: |
+          set -eu
+          su builder -c 'makepkg --printsrcinfo > .SRCINFO.generated'
           diff -u .SRCINFO .SRCINFO.generated || {
             echo "::error::.SRCINFO is out of date. Run 'makepkg --printsrcinfo > .SRCINFO' and commit."
             exit 1
           }
 
       - name: Build package
+        run: su builder -c 'makepkg -sf --noconfirm'
+
+      - name: Lint built package with namcap
         run: |
-          su builder -c 'cd "$PWD" && makepkg -sf --noconfirm'
+          set -eu
+          namcap ./*.pkg.tar.zst | tee namcap-pkg.log
+          # Two warnings are known false positives and are not gated on:
+          #   - "Referenced library 'sh'": the shims use #!/bin/sh, provided
+          #     by bash in `base`, which namcap does not model.
+          #   - "Dependency included, but may not be needed ('handlr-regex')":
+          #     namcap only inspects library links, never shell-level
+          #     `command -v handlr` / `handlr open` calls.
+          if grep -q ' E: ' namcap-pkg.log; then
+            echo "::error::namcap reported errors on the built package"
+            exit 1
+          fi
 
       - name: Install built package
-        run: |
-          pacman -U --noconfirm ./*.pkg.tar.zst
+        run: pacman -U --noconfirm ./*.pkg.tar.zst
 
-      - name: Smoke test - binaries present and executable
-        run: |
-          set -e
-          for tool in xdg-open xdg-mime xdg-settings xdg-desktop-menu \
-                      xdg-desktop-icon xdg-icon-resource xdg-email \
-                      xdg-screensaver; do
-            command -v "$tool" >/dev/null || { echo "missing: $tool"; exit 1; }
-          done
-          echo "All 8 xdg-utils tools present."
-
-      - name: Smoke test - xdg-open shim behavior
-        run: |
-          set -e
-          # --help / --manual / --version must not error
-          xdg-open --help
-          xdg-open --manual
-          xdg-open --version || true   # exits 3 if handlr missing; both OK to observe here
-
-          # No args -> syntax error (exit 1)
-          if xdg-open; then
-            echo "::error::xdg-open with no args should fail"; exit 1
-          fi
-
-          # Nonexistent local file -> exit 2
-          if xdg-open /nonexistent/path/does-not-exist; then
-            echo "::error::xdg-open on missing file should fail with 2"; exit 1
-          fi
-
-      - name: Smoke test - xdg-mime shim query/default routing
-        run: |
-          set -e
-          xdg-open --help >/dev/null
-          echo "test content" > /tmp/sample.txt
-          xdg-mime query filetype /tmp/sample.txt
-          xdg-mime query default text/plain || true
-
-      - name: Smoke test - xdg-mime install/uninstall fallback path exists
-        run: |
-          test -x /usr/lib/xdg-utils-handlr/xdg-mime.upstream
-          echo "Upstream xdg-mime fallback present."
-
-      - name: Verify pacman sees this package as providing xdg-utils
-        run: |
-          pacman -Qi xdg-utils-handlr | grep -i "Provides" | grep -q "xdg-utils"
+      - name: Run the test suite against the installed package
+        run: tests/run.sh --installed
 
       - name: Upload built package artifact
         uses: actions/upload-artifact@v4

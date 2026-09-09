@@ -1,0 +1,118 @@
+name: handlr-drift
+
+# Watches for the *other* direction of breakage.
+#
+# build-and-test guards against changes made in this repo, and
+# check-upstream-version guards against new xdg-utils releases. Neither
+# notices when a new `handlr-regex` release changes its output format or
+# exit codes underneath us -- which is precisely what caused the two worst
+# bugs this package has had: `handlr mime` emitting a padded table where a
+# bare mimetype was expected, and handlr aborting (SIGABRT) on its own error
+# path with no D-Bus session.
+#
+# So: rebuild main weekly against whatever handlr-regex is currently in
+# `extra`, run the suite, and open an issue if it breaks.
+
+on:
+  schedule:
+    # Wednesdays 06:00 UTC -- offset from check-upstream-version (Mondays)
+    # so a failure is attributable to one workflow at a time.
+    - cron: "0 6 * * 3"
+  workflow_dispatch: {}
+
+permissions:
+  contents: read
+  issues: write
+
+concurrency:
+  group: handlr-drift
+  cancel-in-progress: false
+
+jobs:
+  drift:
+    runs-on: ubuntu-latest
+    container:
+      image: archlinux:base-devel
+    outputs:
+      handlr_version: ${{ steps.versions.outputs.handlr }}
+    steps:
+      - name: Install git before checkout
+        run: |
+          pacman -Sy --noconfirm --needed archlinux-keyring
+          pacman -S  --noconfirm --needed git
+
+      - name: Checkout
+        uses: actions/checkout@v5
+
+      - name: Install build/test deps
+        run: |
+          pacman -Su --noconfirm
+          pacman -S --needed --noconfirm base-devel sudo bats handlr-regex
+
+      - name: Record the versions under test
+        id: versions
+        run: |
+          set -eu
+          h="$(handlr --version 2>&1 | head -1)"
+          echo "handlr=${h}" >> "$GITHUB_OUTPUT"
+          {
+            echo "### Versions under test"
+            echo
+            echo "- handlr: \`${h}\`"
+            echo "- shared-mime-info: \`$(pacman -Q shared-mime-info)\`"
+            echo "- packaged xdg-utils: \`$(grep -m1 '^pkgver=' PKGBUILD | cut -d= -f2)\`"
+          } >> "$GITHUB_STEP_SUMMARY"
+
+      - name: Build and install
+        run: |
+          set -eu
+          useradd -m builder
+          echo 'builder ALL=(ALL) NOPASSWD: ALL' >> /etc/sudoers
+          chown -R builder:builder "$GITHUB_WORKSPACE"
+          su builder -c 'makepkg -sf --noconfirm'
+          pacman -U --noconfirm ./*.pkg.tar.zst
+
+      - name: Run the test suite
+        run: tests/run.sh --installed
+
+      - name: Open or update a drift issue on failure
+        if: failure()
+        uses: actions/github-script@v7
+        with:
+          script: |
+            const handlr = "${{ steps.versions.outputs.handlr }}" || "unknown";
+            const title = "handlr drift: the test suite fails against current handlr-regex";
+            const run = `${context.serverUrl}/${context.repo.owner}/${context.repo.repo}/actions/runs/${context.runId}`;
+            const body =
+              `The scheduled \`handlr-drift\` run failed.\n\n` +
+              `- handlr under test: \`${handlr}\`\n` +
+              `- workflow run: ${run}\n\n` +
+              `\`main\` builds and installs, but the behavioral suite no longer ` +
+              `passes against the \`handlr-regex\` currently in \`extra\`. That ` +
+              `usually means handlr changed an output format or an exit code the ` +
+              `shims depend on.\n\n` +
+              `Worth checking first:\n` +
+              `- \`handlr mime --json\` output shape (the shims parse it)\n` +
+              `- whether \`-n\`/\`--disable-notifications\` still exists and still ` +
+              `suppresses the failure notification\n` +
+              `- whether a failing \`handlr\` run still writes to stderr, which is ` +
+              `how the shims detect failure (see docs/EDGE_CASES.md section I)\n`;
+            const { data: existing } = await github.rest.issues.listForRepo({
+              owner: context.repo.owner,
+              repo: context.repo.repo,
+              state: "open",
+              labels: "handlr-drift",
+            });
+            const open = existing.find(i => i.title === title);
+            if (open) {
+              await github.rest.issues.createComment({
+                owner: context.repo.owner, repo: context.repo.repo,
+                issue_number: open.number,
+                body: `Still failing as of ${new Date().toISOString().slice(0, 10)} — handlr \`${handlr}\`. ${run}`,
+              });
+            } else {
+              await github.rest.issues.create({
+                owner: context.repo.owner, repo: context.repo.repo,
+                title, labels: ["handlr-drift"], body,
+              });
+            }

@@ -2,11 +2,20 @@ name: check-upstream-version
 
 # Watches the upstream freedesktop.org xdg-utils project for new tags and,
 # when one is found that we haven't packaged yet, opens a pull request that
-# bumps pkgver/pkgrel, recomputes sha256sums, and regenerates .SRCINFO.
+# bumps pkgver/pkgrel, recomputes the tarball sha256sum, and regenerates
+# .SRCINFO.
 #
 # If the PR can't be created/updated automatically for any reason, it falls
 # back to opening (or updating) a tracking issue instead, so a new upstream
 # release is never silently missed.
+#
+# Architecture note: this job runs on the *host* runner, not inside an
+# archlinux container, and reaches into Arch only for the two commands that
+# genuinely need it (updpkgsums, makepkg --printsrcinfo). archlinux:base-devel
+# ships no git, so running the whole job in the container made
+# actions/checkout silently fall back to a REST-API tarball download with no
+# .git directory -- which broke every git step downstream. Keeping git,
+# Node and the token on the host avoids that entire class of failure.
 
 on:
   schedule:
@@ -19,25 +28,21 @@ permissions:
   pull-requests: write
   issues: write
 
+concurrency:
+  group: check-upstream-version
+  cancel-in-progress: false
+
 jobs:
   check-version:
     runs-on: ubuntu-latest
-    container:
-      image: archlinux:base-devel
     steps:
       - name: Checkout
-        uses: actions/checkout@v4
-
-      - name: Install tooling
-        run: |
-          pacman -Syu --noconfirm
-          # pacman-contrib provides updpkgsums; base-devel does not.
-          pacman -S --needed --noconfirm git jq curl sudo base-devel pacman-contrib
+        uses: actions/checkout@v5
 
       - name: Determine current and latest upstream version
         id: versions
         run: |
-          set -e
+          set -eu
           current="$(grep -m1 '^pkgver=' PKGBUILD | cut -d= -f2)"
           echo "current=${current}" >> "$GITHUB_OUTPUT"
 
@@ -72,41 +77,76 @@ jobs:
       - name: Bump pkgver / reset pkgrel
         if: steps.versions.outputs.up_to_date == 'false'
         run: |
-          set -e
+          set -eu
           sed -i "s/^pkgver=.*/pkgver=${{ steps.versions.outputs.latest }}/" PKGBUILD
           sed -i "s/^pkgrel=.*/pkgrel=1/" PKGBUILD
 
-      - name: Recompute sha256sums against the new tarball + local shims
+      - name: Refresh tarball checksum and .SRCINFO (Arch container)
         if: steps.versions.outputs.up_to_date == 'false'
         run: |
-          set -e
-          useradd -m builder
-          echo 'builder ALL=(ALL) NOPASSWD: ALL' >> /etc/sudoers
-          chown -R builder:builder "$GITHUB_WORKSPACE"
-          su builder -c 'cd "$PWD" && updpkgsums'
+          set -eu
+          # Only the remote tarball has a real sha256sum (the local shims are
+          # SKIP), so updpkgsums here just re-fetches and re-hashes the new
+          # upstream archive.
+          docker run --rm -v "$PWD:/pkg" -w /pkg archlinux:base-devel bash -eu -c '
+            pacman -Sy --noconfirm --needed archlinux-keyring
+            pacman -S  --noconfirm --needed base-devel pacman-contrib
+            useradd -m builder
+            chown -R builder:builder /pkg
+            su builder -c "updpkgsums && makepkg --printsrcinfo > .SRCINFO"
+          '
+          # The container wrote as its own uid; hand the tree back to the
+          # runner user so the git steps below can read and stage it.
+          sudo chown -R "$(id -u):$(id -g)" .
 
-      - name: Regenerate .SRCINFO
+      - name: Show what changed
         if: steps.versions.outputs.up_to_date == 'false'
-        run: |
-          set -e
-          chown -R builder:builder "$GITHUB_WORKSPACE"
-          su builder -c 'cd "$PWD" && makepkg --printsrcinfo > .SRCINFO'
+        run: git diff -- PKGBUILD .SRCINFO
 
-      - name: Restore workspace ownership for create-pull-request
+      - name: Build and test the bumped package
+        # GitHub does not run pull_request workflows on PRs opened with the
+        # default GITHUB_TOKEN, so build-and-test will NOT run against the
+        # PR this job is about to create. Run the suite here instead and
+        # report the result in the PR body -- otherwise an upstream release
+        # that breaks the shims would land in a green-looking PR.
         if: steps.versions.outputs.up_to_date == 'false'
+        id: verify
+        continue-on-error: true
         run: |
-          chown -R root:root "$GITHUB_WORKSPACE"
-          git config --global --add safe.directory "$GITHUB_WORKSPACE"
+          set -eu
+          docker run --rm -v "$PWD:/pkg" -w /pkg archlinux:base-devel bash -eu -c '
+            pacman -Sy --noconfirm --needed archlinux-keyring >/dev/null
+            pacman -S  --noconfirm --needed base-devel sudo bats handlr-regex >/dev/null
+            useradd -m builder
+            echo "builder ALL=(ALL) NOPASSWD: ALL" >> /etc/sudoers
+            chown -R builder:builder /pkg
+            su builder -c "makepkg -sf --noconfirm"
+            pacman -U --noconfirm ./*.pkg.tar.zst
+            tests/run.sh --installed
+          ' 2>&1 | tee verify.log
+          sudo chown -R "$(id -u):$(id -g)" .
+
+      - name: Summarize the verification result
+        if: steps.versions.outputs.up_to_date == 'false'
+        id: verdict
+        run: |
+          set -eu
+          if [ "${{ steps.verify.outcome }}" = "success" ]; then
+            echo "status=:white_check_mark: The test suite passes against this version." >> "$GITHUB_OUTPUT"
+          else
+            echo "status=:x: **The test suite FAILS against this version** -- do not merge without investigating. See the workflow log." >> "$GITHUB_OUTPUT"
+          fi
+          rm -f verify.log
 
       - name: Open pull request with the version bump
         if: steps.versions.outputs.up_to_date == 'false'
         id: pr
-        uses: peter-evans/create-pull-request@v6
+        uses: peter-evans/create-pull-request@v7
         with:
           token: ${{ secrets.GITHUB_TOKEN }}
           branch: "upstream-bump/xdg-utils-${{ steps.versions.outputs.latest }}"
-          commit-message: "PKGBUILD: bump xdg-utils to ${{ steps.versions.outputs.latest }}"
-          title: "Bump vendored xdg-utils to ${{ steps.versions.outputs.latest }}"
+          commit-message: "build(pkg): ⬆️ bump vendored xdg-utils to ${{ steps.versions.outputs.latest }}"
+          title: "build(pkg): ⬆️ bump vendored xdg-utils to ${{ steps.versions.outputs.latest }}"
           body: |
             Upstream `xdg-utils` released **${{ steps.versions.outputs.latest_tag }}**
             (was `${{ steps.versions.outputs.current }}`):
@@ -115,7 +155,7 @@ jobs:
             This PR was opened automatically by the `check-upstream-version`
             workflow. It updates:
             - `pkgver` (and resets `pkgrel` to `1`)
-            - `sha256sums` (recomputed with `updpkgsums`)
+            - the tarball `sha256sums` entry (recomputed with `updpkgsums`)
             - `.SRCINFO` (regenerated with `makepkg --printsrcinfo`)
 
             Please review the upstream changelog/diff before merging — in
@@ -124,6 +164,15 @@ jobs:
             `xdg-icon-resource`, `xdg-email`, `xdg-screensaver`, or the
             fallback `xdg-mime.upstream`) changed their CLI surface in a way
             that would affect the `xdg-open`/`xdg-mime` shims.
+
+            ### Verification
+
+            ${{ steps.verdict.outputs.status }}
+
+            The suite was run by the `check-upstream-version` workflow before
+            this PR was opened, because GitHub does not run `pull_request`
+            workflows on PRs created with the default `GITHUB_TOKEN`. Push an
+            empty commit if you want `build-and-test` to run here as well.
           labels: |
             upstream-update
             automated-pr
