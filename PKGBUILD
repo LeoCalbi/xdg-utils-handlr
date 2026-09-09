@@ -54,10 +54,15 @@ source=(
     "xdg-mime"
     "xdg-utils-handlr.install"
 )
+# Only the remote tarball carries a real checksum. xdg-open, xdg-mime and
+# the install hook live in this repo next to the PKGBUILD, so a sum over
+# them guarantees nothing -- anyone able to change a shim can change its
+# recorded sum in the same commit -- while forcing an `updpkgsums` run
+# after every shim edit or makepkg fails with a bogus corruption error.
 sha256sums=('f6b648c064464c2636884c05746e80428110a576f8daacf46ef2e554dcfdae75'
-            'a4e4ad66921b146d1cee9c5be0f7449ebf4203bdb6ae808e16bdb7fb535b900d'
-            '8f0b0335863e57fbe0b40fc1a4db7c64276c4d18ae1ede064066057f72ae372f'
-            '438ede5b1492cddc520c03104b271f06d178601da855e0b9460a1d0525350699')
+            'SKIP'
+            'SKIP'
+            'SKIP')
 
 build() {
     cd "${srcdir}/xdg-utils-v${pkgver}"
