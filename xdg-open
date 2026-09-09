@@ -27,9 +27,22 @@ case "${1:-}" in
         exit 0
         ;;
     --manual)
+        # Upstream implements --manual as a plain-text copy of the man page
+        # embedded in the script. This package installs the genuine,
+        # unmodified upstream man pages, so render the real one rather than
+        # keeping a hand-written summary that can drift out of date.
+        # `man -w` confirms a page is actually installed before exec'ing,
+        # so running from a source checkout (or without man-db) falls back
+        # instead of dying with man's "No manual entry" exit 16.
+        if command -v man >/dev/null 2>&1 && man -w "$PROG" >/dev/null 2>&1; then
+            exec man "$PROG"
+        fi
         usage
         echo
-        echo "This is a handlr-regex shim for xdg-open (xdg-utils-handlr package)."
+        echo "The full manual is installed as a man page: \`man $PROG\`"
+        echo "(requires man-db, and the xdg-utils-handlr package to be installed)"
+        echo
+        echo "This is a handlr-regex shim for $PROG (xdg-utils-handlr package)."
         echo "See: https://github.com/Anomalocaridid/handlr-regex"
         exit 0
         ;;
@@ -90,8 +103,21 @@ if [ "$is_uri" -eq 0 ] && [ ! -e "$TARGET" ]; then
     exit 2
 fi
 
-if handlr open "$TARGET"; then
-    exit 0
-else
+# handlr raises a desktop notification when a command fails and *panics*
+# (SIGABRT, exit 134) if no session bus is reachable -- cron jobs, systemd
+# units, ssh sessions, container builds. `-n` prevents that, but a handlr
+# run with `-n` then exits 0 even when it failed, so success is judged from
+# stderr instead: empty on success, an ERROR/WARN line on failure.
+#
+# stdout is routed to the real stdout through fd 3 rather than captured, so
+# a Terminal=true handler still talks to the terminal; only stderr goes
+# through the substitution, and it is replayed below.
+exec 3>&1
+err=$(handlr open -n -- "$TARGET" 2>&1 1>&3 3>&-) || :
+exec 3>&-
+
+if [ -n "$err" ]; then
+    printf '%s\n' "$err" >&2
     exit 4
 fi
+exit 0

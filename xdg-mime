@@ -20,7 +20,9 @@
 set -eu
 
 PROG="xdg-mime"
-UPSTREAM="/usr/lib/xdg-utils-handlr/xdg-mime.upstream"
+# Overridable so the test suite can exercise this script straight from a
+# working tree, before the package is installed.
+UPSTREAM="${XDG_UTILS_HANDLR_UPSTREAM:-/usr/lib/xdg-utils-handlr/xdg-mime.upstream}"
 
 usage() {
     cat <<EOF
@@ -44,15 +46,94 @@ fallback_to_upstream() {
     fi
 }
 
+require_handlr() {
+    # Only the handlr-backed subcommands need handlr. install/uninstall
+    # just exec the vendored upstream script, so demanding handlr for them
+    # would break package installers on a half-broken handlr install --
+    # exactly the dependent-breaking failure this package exists to avoid.
+    if ! command -v handlr >/dev/null 2>&1; then
+        echo "$PROG: handlr: required tool not found" >&2
+        exit 3
+    fi
+}
+
+# Well-formed URI scheme per RFC 3986 (ALPHA *( ALPHA / DIGIT / "+" / "-"
+# / "." ) ":"), same test xdg-open uses. handlr resolves these to
+# x-scheme-handler/*; upstream xdg-mime rejects them outright, so
+# accepting them is a deliberate superset rather than a fidelity gap.
+is_uri() {
+    case "$1" in
+        [a-zA-Z]*:*)
+            scheme="${1%%:*}"
+            rest="${scheme#?}"
+            case "$rest" in
+                *[!a-zA-Z0-9+.-]*) return 1 ;;
+                *) return 0 ;;
+            esac
+            ;;
+    esac
+    return 1
+}
+
+query_filetype() {
+    target="$1"
+
+    # handlr reports application/x-zerosize for a path that does not
+    # exist and ignores read permission entirely, so the documented exit
+    # codes (2 = not found, 5 = permission denied) have to be enforced
+    # here instead of inferred from handlr's status.
+    if ! is_uri "$target"; then
+        if [ ! -e "$target" ]; then
+            echo "$PROG: file '$target' does not exist" >&2
+            exit 2
+        fi
+        if [ ! -r "$target" ]; then
+            echo "$PROG: no permission to read file '$target'" >&2
+            exit 5
+        fi
+    fi
+
+    require_handlr
+
+    # `handlr mime` renders a padded table with a header row, which would
+    # break callers doing mime=$(xdg-mime query filetype FILE). --json is
+    # handlr's documented output contract, so parse that instead. A
+    # mimetype is always a bare token, and an occurrence of the key inside
+    # a path arrives JSON-escaped (\"mime\":\"), so the greedy match
+    # below always lands on the real value.
+    if ! json=$(handlr mime -n --json -- "$target"); then
+        exit 4
+    fi
+    mime=$(printf '%s' "$json" | sed -n 's/.*"mime":"\([^"]*\)".*/\1/p')
+    if [ -z "$mime" ]; then
+        echo "$PROG: could not determine mimetype for '$target'" >&2
+        exit 4
+    fi
+    printf '%s\n' "$mime"
+}
+
 case "${1:-}" in
     --help)
         usage
         exit 0
         ;;
     --manual)
+        # Upstream implements --manual as a plain-text copy of the man page
+        # embedded in the script. Prefer the genuine man page this package
+        # installs; fall back to upstream's embedded copy, which is exact
+        # and needs no man(1); fall back again to the synopsis.
+        # `man -w` confirms a page is actually installed before exec'ing,
+        # so running from a source checkout (or without man-db) falls
+        # through instead of dying with man's "No manual entry" exit 16.
+        if command -v man >/dev/null 2>&1 && man -w "$PROG" >/dev/null 2>&1; then
+            exec man "$PROG"
+        fi
+        if [ -x "$UPSTREAM" ]; then
+            exec "$UPSTREAM" --manual
+        fi
         usage
         echo
-        echo "This is a handlr-regex shim for xdg-mime (xdg-utils-handlr package)."
+        echo "This is a handlr-regex shim for $PROG (xdg-utils-handlr package)."
         echo "'query' and 'default' are served by handlr; 'install'/'uninstall'"
         echo "fall back to the real upstream xdg-mime script."
         exit 0
@@ -73,11 +154,6 @@ case "${1:-}" in
         ;;
 esac
 
-if ! command -v handlr >/dev/null 2>&1; then
-    echo "$PROG: handlr: required tool not found" >&2
-    exit 3
-fi
-
 case "$1" in
     query)
         shift
@@ -88,8 +164,12 @@ case "$1" in
                     usage >&2
                     exit 1
                 fi
-                # handlr mime accepts one or more paths/URLs
-                handlr mime "$@"
+                # Upstream reads only its FILE argument (filename="$2")
+                # and silently ignores anything after it, so a caller that
+                # passes extras keeps working rather than newly failing
+                # here. Deliberately neither upstream's variadic-looking
+                # `handlr mime` nor a stricter arity error.
+                query_filetype "$1"
                 ;;
             default)
                 shift
@@ -97,7 +177,17 @@ case "$1" in
                     usage >&2
                     exit 1
                 fi
-                handlr get "$1"
+                # `-n` avoids handlr's notification panic (see query_filetype).
+                # Upstream prints nothing and exits 0 when no default is set,
+                # so an empty result is a valid answer rather than an error --
+                # which is also what handlr reports here. handlr's own
+                # "No handlers found" diagnostic is dropped to keep that case
+                # as quiet as upstream.
+                require_handlr
+                out=$(handlr get -n -- "$1" 2>/dev/null) || :
+                if [ -n "$out" ]; then
+                    printf '%s\n' "$out"
+                fi
                 ;;
             *)
                 usage >&2
@@ -111,10 +201,20 @@ case "$1" in
             usage >&2
             exit 1
         fi
+        require_handlr
         app="$1"
         shift
         for mimetype in "$@"; do
-            handlr set "$mimetype" "$app"
+            # Same `-n` + judge-by-stderr handling as xdg-open: with
+            # notifications disabled handlr returns 0 even when the set
+            # failed (e.g. an invalid .desktop entry).
+            exec 3>&1
+            err=$(handlr set -n -- "$mimetype" "$app" 2>&1 1>&3 3>&-) || :
+            exec 3>&-
+            if [ -n "$err" ]; then
+                printf '%s\n' "$err" >&2
+                exit 4
+            fi
         done
         ;;
     install|uninstall)
