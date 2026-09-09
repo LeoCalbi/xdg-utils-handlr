@@ -1,56 +1,23 @@
 # xdg-utils-handlr
 
-A drop-in replacement for Arch Linux's `xdg-utils` package that redirects
-`xdg-open` and the query/set-default parts of `xdg-mime` to
-[`handlr-regex`](https://github.com/Anomalocaridid/handlr-regex), while
-vendoring the **unmodified upstream `xdg-utils` scripts** for every tool
-handlr has no equivalent for.
+**Make `xdg-open` use [handlr](https://github.com/Anomalocaridid/handlr-regex) — without
+uninstalling `xdg-utils` and breaking half your system.**
 
-This lets you replace `xdg-open`'s default-app resolution with handlr's
-faster, more configurable engine (including regex-based handlers) without
-uninstalling `xdg-utils` and breaking the ~90 packages in the Arch `extra`
-repo that depend on it.
+On Arch, roughly 90 packages in `extra` depend on `xdg-utils`. That makes it awkward to
+replace: `handlr` is a far nicer way to decide which application opens what, but removing
+`xdg-utils` to get out of its way takes LibreOffice, VS Code, Qt, and plenty more with it.
 
-## Status
+This package is the compromise that actually works. It **satisfies the `xdg-utils` dependency**,
+routes `xdg-open` through handlr, and keeps every other `xdg-*` tool byte-for-byte identical to
+upstream — because they're the genuine upstream scripts, vendored unchanged.
 
-**Testing / pre-AUR.** This repository exists to validate the package on
-real machines and via CI before it is submitted to the AUR. See
-[Roadmap](#roadmap-toward-aur) below.
+```console
+$ xdg-open notes.md          # resolved by handlr, with your regex rules
+$ pacman -Qi libreoffice-fresh | grep Depends
+Depends On      : ... xdg-utils ...        # still satisfied, nothing removed
+```
 
-## What's replaced vs. vendored
-
-| Tool                                                    | Backend                                                        |
-| ------------------------------------------------------- | -------------------------------------------------------------- |
-| `xdg-open`                                              | **handlr** (`handlr open`)                                     |
-| `xdg-mime query filetype` / `query default` / `default` | **handlr** (`handlr mime` / `handlr get` / `handlr set`)       |
-| `xdg-mime install` / `uninstall`                        | **vendored upstream** `xdg-mime` script (no handlr equivalent) |
-| `xdg-settings`                                          | **vendored upstream**, unmodified                              |
-| `xdg-desktop-menu`                                      | **vendored upstream**, unmodified                              |
-| `xdg-desktop-icon`                                      | **vendored upstream**, unmodified                              |
-| `xdg-icon-resource`                                     | **vendored upstream**, unmodified                              |
-| `xdg-email`                                             | **vendored upstream**, unmodified                              |
-| `xdg-screensaver`                                       | **vendored upstream**, unmodified                              |
-
-All 8 upstream man pages are installed unmodified so `man xdg-open`, `xdg-open --manual`, etc. keep working.
-
-### Why not replace everything with handlr?
-
-`handlr` only implements default-application resolution (open/get/set/mime).
-It has no data model or commands for MIME-type installation, desktop menu
-entries, desktop icons, icon resources, email composition, or screensaver
-control. A prior AUR package (`xdg-utils-handlr`, since delisted) tried a
-handlr-only replacement and broke installers that called the other
-`xdg-utils` tools (see
-[chmln/handlr#15](https://github.com/chmln/handlr/issues/15)). This package
-avoids that failure mode by vendoring the real scripts for anything handlr
-doesn't cover.
-
-## Requirements
-
-- Arch Linux (or an Arch-based distro using `pacman`)
-- [`handlr-regex`](https://aur.archlinux.org/packages/handlr-regex) (pulled in automatically as a `depends`)
-
-## Installing (from this repo, pre-AUR)
+## Install
 
 ```sh
 git clone https://github.com/LeoCalbi/xdg-utils-handlr.git
@@ -58,118 +25,104 @@ cd xdg-utils-handlr
 makepkg -si
 ```
 
-`makepkg` will:
+`pacman` will offer to replace `xdg-utils`. Say yes — this package declares
+`provides=xdg-utils`, so every package that depends on it stays satisfied and **nothing gets
+removed**. [`handlr-regex`](https://archlinux.org/packages/extra/x86_64/handlr-regex/) comes
+along automatically from `extra`.
 
-1. Download the pinned upstream `xdg-utils` source tarball from
-   `gitlab.freedesktop.org` (version matches Arch's `extra/xdg-utils`).
-2. Install the handlr-backed `xdg-open` and `xdg-mime` shims.
-3. Vendor the unmodified upstream scripts for the remaining 6 tools.
-4. Offer to remove the conflicting `xdg-utils` package (since this
-   package declares `provides=('xdg-utils')` + `conflicts=('xdg-utils')`,
-   pacman treats the requirement as satisfied for all dependents).
+> Not on the AUR yet — see [Status](#status).
 
-## Uninstalling / reverting to plain xdg-utils
+## What changes, and what doesn't
 
-```sh
-sudo pacman -S xdg-utils --overwrite '*'
+Only the two tools handlr can genuinely do a better job of are replaced:
+
+| | Backed by | |
+| --- | --- | --- |
+| `xdg-open` | **handlr** | the whole point |
+| `xdg-mime query filetype` / `query default` / `default` | **handlr** | so queries agree with what `xdg-open` actually does |
+| `xdg-mime install` / `uninstall` | upstream, unchanged | handlr has no concept of installing MIME definitions |
+| `xdg-settings` · `xdg-desktop-menu` · `xdg-desktop-icon` · `xdg-icon-resource` · `xdg-email` · `xdg-screensaver` | upstream, unchanged | handlr has no equivalent at all |
+
+All eight upstream man pages are installed too, so `man xdg-open` and `xdg-open --manual` work
+exactly as before.
+
+**Why not put everything on handlr?** Because that's been tried. An earlier AUR package of this
+name shimmed `xdg-open` and stubbed out the rest, which broke real software — installers calling
+`xdg-mime install` or `xdg-desktop-menu` suddenly did nothing
+([chmln/handlr#15](https://github.com/chmln/handlr/issues/15)). It was eventually delisted. The
+six vendored scripts here are that lesson, made permanent.
+
+## What you actually get
+
+Everything in `~/.config/handlr/handlr.toml` now applies to `xdg-open`, which means anything
+that opens a file or link on your desktop.
+
+**Route by URL pattern, not just MIME type.** Send YouTube links to a video player while every
+other link goes to your browser:
+
+```toml
+[[handlers]]
+exec = "freetube %u"
+terminal = false
+regexes = ['(https://)?(www\.)?youtu(be\.com|\.be)/*.']
 ```
 
-or simply:
+**Pick at open time when more than one app fits.** Register several handlers and get a menu
+instead of a hardcoded default:
+
+```toml
+enable_selector = true
+selector = "wofi --dmenu --prompt 'Open With: '"
+```
+
+**Read and change defaults without editing `mimeapps.list` by hand:**
+
+```console
+$ handlr list                       # everything currently registered
+$ xdg-mime query filetype notes.md
+text/markdown
+$ xdg-mime default helix.desktop text/markdown
+```
+
+## Things that behave a little differently
+
+Mixing handlr with the vendored scripts has a handful of sharp edges — MIME detection that
+disagrees with plain `xdg-utils` on some file types, `mimeapps.list` written by two different
+code paths, `Terminal=true` entries, and the fact that vendored scripts don't receive upstream
+bugfixes until this package is rebuilt.
+
+They're all written up, with workarounds, in
+**[`docs/EDGE_CASES.md`](docs/EDGE_CASES.md)** — worth a skim before you file a bug.
+
+## Going back
 
 ```sh
-sudo pacman -R xdg-utils-handlr
 sudo pacman -S xdg-utils
 ```
 
-## Automated maintenance (CI)
+`pacman` will offer to remove `xdg-utils-handlr`; accept, and you're back to stock. Your handlr
+config is left alone, so reinstalling later picks up where you left off.
 
-Two extra workflows, on top of `build-and-test.yml`, keep this package from
-going stale:
+## Status
 
-- **`check-upstream-version.yml`** — runs weekly (Mondays 06:00 UTC, or
-  on-demand via "Run workflow"). It queries the
-  [`xdg/xdg-utils` GitLab API](https://gitlab.freedesktop.org/xdg/xdg-utils/-/tags)
-  for the latest tag, and if it's newer than the `pkgver` in `PKGBUILD`:
-  bumps `pkgver`, resets `pkgrel=1`, recomputes `sha256sums` with
-  `updpkgsums`, regenerates `.SRCINFO`, and opens a pull request for
-  review. If the PR step fails for any reason, it falls back to opening
-  (or reusing) a tracking issue labeled `upstream-update` so the release
-  is never silently missed.
-- **`update-sha256sums.yml`** — runs on every pull request that touches
-  `PKGBUILD`, `xdg-open`, or `xdg-mime`. It re-runs `updpkgsums` and
-  regenerates `.SRCINFO`, then pushes a fixup commit onto the PR branch if
-  anything drifted. This means contributors never have to remember to run
-  `updpkgsums` by hand before merging (skipped on PRs from forks, since
-  the default token can't push to a fork's branch — the `build-and-test`
-  `.SRCINFO`-sync check will still fail loudly in that case instead).
+**Working and in daily use, not yet on the AUR.** Every change is built in a clean Arch
+container and run against a 52-test suite that asserts the `xdg-open`/`xdg-mime` command-line
+contract — exit codes *and* output — comparing against the real upstream script as an oracle.
+Two scheduled jobs watch for breakage from outside the repo: one for new `xdg-utils` releases,
+one for new `handlr-regex` releases.
 
-Both workflows require the repo's default `GITHUB_TOKEN` to have write
-access to contents/PRs/issues (Settings → Actions → General → Workflow
-permissions → "Read and write permissions").
+Still to do before an AUR submission: testing on more real desktops than the author's, and a
+second pair of eyes on the build. If you want to help, that's the most useful thing.
 
-## Known edge cases
+## Contributing & development
 
-See [`docs/EDGE_CASES.md`](docs/EDGE_CASES.md) for a full analysis of
-behavioral discrepancies versus plain `xdg-utils` or plain `handlr-regex`
-(mimeapps.list write races, multi-handler selector interaction with
-vendored tools, terminal-entry handling differences, and version-drift
-risk from vendoring).
+Build instructions, the CI design, testing, and the AUR checklist live in
+**[`docs/DEVELOPING.md`](docs/DEVELOPING.md)**.
 
-## Roadmap toward AUR
-
-- [x] `updpkgsums` is now run automatically by CI (see
-      [Automated maintenance](#automated-maintenance-ci) above) and the
-      initial `sha256sums` have been generated locally against the pinned
-      upstream tarball.
-- [x] `namcap PKGBUILD` and `namcap *.pkg.tar.zst` both pass cleanly
-      (only two known false positives on the built package: `sh` shebangs
-      against `bash` in `base`, and `handlr-regex` flagged as
-      possibly-unused because namcap only inspects library links, not
-      shell-level `command -v` / `handlr open` calls).
-- [x] `url=` in `PKGBUILD` and the clone URL in
-      [Installing (from this repo, pre-AUR)](#installing-from-this-repo-pre-aur)
-      now point at `https://github.com/LeoCalbi/xdg-utils-handlr`.
-- [x] `PACKAGER` is set in `~/.config/pacman/makepkg.conf` so built
-      packages carry a real maintainer string instead of
-      `Unknown Packager` in `pacman -Qi`.
-- [ ] (Optional) Provide a fine-grained PAT as `secrets.CI_PAT` (or
-      similar) and swap it into
-      [`check-upstream-version.yml`](.github/workflows/check-upstream-version.yml)
-      in place of `secrets.GITHUB_TOKEN`. GitHub intentionally does not
-      re-trigger `pull_request` workflows on PRs opened by the default
-      `GITHUB_TOKEN`, so the weekly auto-bump PR currently lands without
-      `build-and-test` running against it. A PAT with `contents:write` +
-      `pull-requests:write` scopes on this repo restores CI on those PRs.
-- [ ] Manual testing on a real Arch install (not just the CI container):
-      - [ ] Confirm `xdg-open` correctly opens files/URLs via handlr on a
-            real desktop session (GNOME/KDE/Sway/etc.)
-      - [ ] Confirm `xdg-settings get/set default-web-browser` still works
-            via the vendored script
-      - [ ] Confirm at least one real-world installer that calls
-            `xdg-mime install` (e.g. an AUR package bundling a custom
-            MIME type) completes successfully
-      - [ ] Confirm removing `xdg-utils` and installing this package
-            does not trigger removal of any of the ~90 dependent packages
-- [ ] Open an issue upstream in `handlr-regex` referencing this package
-      as prior art / feature request for native `install`/`uninstall`
-      and `xdg-settings` support, per the discussion in
-      [chmln/handlr#15](https://github.com/chmln/handlr/issues/15).
-- [ ] Have at least one other person test-build via the CI artifact or
-      locally, per AUR guidance to seek review before submission.
-- [ ] Submit to AUR:
-      ```sh
-      git clone ssh://aur@aur.archlinux.org/xdg-utils-handlr.git aur-xdg-utils-handlr
-      cp PKGBUILD .SRCINFO aur-xdg-utils-handlr/
-      cd aur-xdg-utils-handlr
-      git add PKGBUILD .SRCINFO
-      git commit -m "Initial import"
-      git push origin master
-      ```
+Bug reports are welcome — please include your handlr version (`handlr --version`), what you ran,
+and what you expected.
 
 ## License
 
-- This repository's own shim scripts (`xdg-open`, `xdg-mime`) and
-  `PKGBUILD`: MIT (see [`LICENSE`](LICENSE)).
-- Vendored `xdg-utils` scripts: MIT, per upstream
-  (see `/usr/share/licenses/xdg-utils-handlr/LICENSE` after install).
-- `handlr-regex` itself: MIT, per its own repository.
+MIT, for this repository's own shims and `PKGBUILD` — see [`LICENSE`](LICENSE). The vendored
+`xdg-utils` scripts and `handlr-regex` are MIT under their own upstream terms.
