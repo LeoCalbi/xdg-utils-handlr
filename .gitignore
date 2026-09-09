@@ -6,3 +6,5 @@ pkg/
 .SRCINFO.bak
 .SRCINFO.generated
 xdg-utils-*.tar.gz
+CLAUDE.md
+.claude/local
